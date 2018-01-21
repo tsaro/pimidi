@@ -213,47 +213,98 @@ int net_socket_listener( void )
 
 				net_applemidi_cmd_destroy( &command );
 			}
-			// Dial signal from mac (not previously processed) 
+			// MIDI note from sending device
 			if( packet[0] == 0x80 )
 			{
-				net_response_t *response = NULL;
+				rtp_packet_t *rtp_packet = NULL;
+				unsigned char *packed_rtp_buffer = NULL;
+				size_t packed_rtp_buffer_len = 0;
 
-				ret = net_applemidi_unpack( &command, packet, recv_len );
+				midi_note_packet_t *note_packet = NULL;
+				midi_payload_t *midi_payload = NULL;
 
-				switch( command->command )
+				char *packed_journal = NULL;
+				size_t packed_journal_len = 0;
+
+				unsigned char *packed_payload = NULL;
+				size_t packed_payload_len = 0;
+
+				unsigned char *packed_rtp_payload = NULL;
+
+
+				// Get a journal if there is one
+				net_ctx_journal_pack( 0 , &packed_journal, &packed_journal_len);
+
+				// For the NOTE event, the MIDI note is already packed
+				// but we still need to pack it into a payload
+				// Create the payload
+				midi_payload = midi_payload_create();
+
+				if( midi_payload )
 				{
-					case NET_APPLEMIDI_CMD_INV:
-						response = cmd_inv_handler( ip_address, ntohs( from_addr.sin_port ), command->data );
-						break;
-					case NET_APPLEMIDI_CMD_ACCEPT:
-						break;
-					case NET_APPLEMIDI_CMD_REJECT:
-						break;
-					case NET_APPLEMIDI_CMD_END:
-						response = cmd_end_handler( command->data );
-						break;
-					case NET_APPLEMIDI_CMD_SYNC:
-						response = cmd_sync_handler( command->data );
-						break;
-					case NET_APPLEMIDI_CMD_FEEDBACK:
-						response = cmd_feedback_handler( command->data );
-						break;
-					case NET_APPLEMIDI_CMD_BITRATE:
-						break;
-						;;
+					uint8_t ctx_id = 0;
+
+					payload_set_buffer( midi_payload, packet + 1 , recv_len - 1 );
+
+					if( packed_journal_len > 0 )
+					{
+						payload_toggle_j( midi_payload );
+					}
+					
+					payload_pack( midi_payload, &packed_payload, &packed_payload_len );
+
+					// Join the packed MIDI payload and the journal together
+					packed_rtp_payload = (unsigned char *)malloc( packed_payload_len + packed_journal_len );
+					memcpy( packed_rtp_payload, packed_payload , packed_payload_len );
+					memcpy( packed_rtp_payload + packed_payload_len , packed_journal, packed_journal_len );
+
+					// Build the RTP packet
+					for( ctx_id = 0 ; ctx_id < _max_ctx ; ctx_id++ )
+					{
+
+						// Check that the connection id is active
+						if( ! net_ctx_is_used( ctx_id ) ) continue;
+
+						rtp_packet = rtp_packet_create();
+						net_ctx_increment_seq( ctx_id );
+
+						// Transfer the connection details to the RTP packet
+						net_ctx_update_rtp_fields( ctx_id , rtp_packet );
+	
+						// Add the MIDI data to the RTP packet
+						rtp_packet->payload_len = packed_payload_len + packed_journal_len;
+						rtp_packet->payload = packed_rtp_payload;
+
+						rtp_packet_dump( rtp_packet );
+
+						// Pack the RTP data
+						rtp_packet_pack( rtp_packet, &packed_rtp_buffer, &packed_rtp_buffer_len );
+
+						net_ctx_send( sockets[ DATA_PORT ], ctx_id , packed_rtp_buffer, packed_rtp_buffer_len );
+
+						FREENULL( (void **)&packed_rtp_buffer );
+						rtp_packet_destroy( &rtp_packet );
+					}
+
+					// Do some cleanup
+					FREENULL( (void **)&packed_rtp_payload );
+					FREENULL( (void **)&packed_payload );
+					FREENULL( (void **)&packed_journal );
+					midi_payload_destroy( &midi_payload );
+
+					ret = midi_note_packet_unpack( &note_packet, packet + 1 , recv_len - 1);
+
+					for( ctx_id = 0 ; ctx_id < _max_ctx ; ctx_id++ )
+					{
+						// Check that the connection id is active
+						if( ! net_ctx_is_used( ctx_id ) ) continue;
+
+						net_ctx_add_journal_note( ctx_id , note_packet );
+					}
 				}
 
-				if( response )
-				{
-					size_t bytes_written = 0;
-					bytes_written = sendto( sockets[i], response->buffer, response->len , 0 , (struct sockaddr *)&from_addr, from_len);
-					logging_printf( LOGGING_DEBUG, "%u bytes written on socket(%d) to (%s:%u)\n", bytes_written, i,ip_address, ntohs( from_addr.sin_port ));	
-					net_response_destroy( &response );
-				}
-
-				net_applemidi_cmd_destroy( &command );
+				midi_note_packet_destroy( &note_packet );
 			}
-
 			// MIDI note from sending device
 			if( packet[0] == 0xaa )
 			{
