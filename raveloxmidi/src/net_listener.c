@@ -213,6 +213,46 @@ int net_socket_listener( void )
 
 				net_applemidi_cmd_destroy( &command );
 			}
+			// Dial signal from mac (not previously processed) 
+			if( packet[0] == 0x80 )
+			{
+				net_response_t *response = NULL;
+
+				ret = net_applemidi_unpack( &command, packet, recv_len );
+
+				switch( command->command )
+				{
+					case NET_APPLEMIDI_CMD_INV:
+						response = cmd_inv_handler( ip_address, ntohs( from_addr.sin_port ), command->data );
+						break;
+					case NET_APPLEMIDI_CMD_ACCEPT:
+						break;
+					case NET_APPLEMIDI_CMD_REJECT:
+						break;
+					case NET_APPLEMIDI_CMD_END:
+						response = cmd_end_handler( command->data );
+						break;
+					case NET_APPLEMIDI_CMD_SYNC:
+						response = cmd_sync_handler( command->data );
+						break;
+					case NET_APPLEMIDI_CMD_FEEDBACK:
+						response = cmd_feedback_handler( command->data );
+						break;
+					case NET_APPLEMIDI_CMD_BITRATE:
+						break;
+						;;
+				}
+
+				if( response )
+				{
+					size_t bytes_written = 0;
+					bytes_written = sendto( sockets[i], response->buffer, response->len , 0 , (struct sockaddr *)&from_addr, from_len);
+					logging_printf( LOGGING_DEBUG, "%u bytes written on socket(%d) to (%s:%u)\n", bytes_written, i,ip_address, ntohs( from_addr.sin_port ));	
+					net_response_destroy( &response );
+				}
+
+				net_applemidi_cmd_destroy( &command );
+			}
 
 			// MIDI note from sending device
 			if( packet[0] == 0xaa )
